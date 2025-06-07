@@ -195,3 +195,6 @@ cython_debug/
 
 # ChromaDB
 chroma*/
+
+# Local cache
+articles_links.txt

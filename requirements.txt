@@ -96,7 +96,6 @@ rsa==4.9.1
 safetensors==0.5.3
 scikit-learn==1.7.0
 scipy==1.15.3
-selenium==4.33.0
 sentence-transformers==4.1.0
 shellingham==1.5.4
 six==1.17.0
