@@ -14,10 +14,39 @@ from bs4 import BeautifulSoup
 from chromadb.utils.data_loaders import ImageLoader
 from tqdm import tqdm
 
-from ai.embedders import NoOpEmbeddingFunction
+from ai.embedders import embedding_factory
+from ai.tokenizers import tokenizer_factory
 from db import get_collection
 
 dotenv.load_dotenv()
+
+BOILERPLATE_PATTERNS = [
+    r'^Subscribe to',
+    r'Click here to',
+    r'Follow us on',
+    r'Related posts?',
+    r'Advertisement',
+    r'©\s*\d{4}',
+    r'Privacy Policy',
+]
+boiler_regex = [re.compile(pat, re.IGNORECASE) for pat in BOILERPLATE_PATTERNS]
+
+
+def is_boilerplate(excerpt: str) -> bool:
+    """
+    Check if the given excerpt is boilerplate content.
+    :param excerpt: Text excerpt to check.
+    :return: True if the excerpt is considered boilerplate, False otherwise.
+    """
+    for rx in boiler_regex:
+        if rx.search(excerpt):
+            return True
+
+    # skip if too short or not enough “real” content
+    if len(excerpt.split()) < 3:
+        return True
+
+    return False
 
 
 def article_meta(
@@ -53,10 +82,7 @@ def article_meta(
     )
 
     # Account for lazy loading images (especially in Ghost CMS run on Next.js)
-    noscript, image = soup.find('noscript'), None
-    if noscript:
-        image = noscript.find('img')
-    image = image or soup.find('img')
+    image = (soup.find('noscript') or soup).find('img')
     if image and image['src'].startswith('/_next/image/?url='):
         # If its Next.js lazy loaded image, extract the encoded URL
         # And remove parameters if present (because they clog the extension)
@@ -84,57 +110,80 @@ def article_meta(
     }
 
 
-def make_chunks(
-        meta: dict,
-        excerpts: list[str],
-        chunk_size: int or None = None
+def make_token_chunks(
+    meta: dict,
+    excerpts: list[str],
+    max_tokens: int = 512,
+    tokenizer_provider: str = "openai",
 ) -> list[dict]:
     """
-    Split the article content into chunks of a specified size.
+    Split the article content into token-limited chunks.
 
-    :param meta: Metadata dictionary containing article information.
+    :param meta: Metadata dict containing at least 'id' and 'date'.
     :param excerpts: List of text excerpts from the article.
-    :param chunk_size: Maximum size of each chunk in characters. If None, no chunking is applied.
-    :return: List of dictionaries, each containing a chunk of text and its metadata.
+    :param max_tokens: Maximum number of tokens per chunk.
+    :param tokenizer_provider: Which tokenizer to use (e.g. "openai", "huggingface").
+    :return: List of dicts, each containing 'id', 'content', and 'meta' with subtitle, article_id, date, chunk_idx, total_chunks.
     """
+
+    tokenizer = tokenizer_factory(tokenizer_provider)
+
     chunks = []
     current_chunk = []
-    article_id = meta.get('id', None)
+    current_tokens = 0
+    article_id = meta.get("id", "")
 
-    def process_current_chunk():
+    def flush_chunk():
+        nonlocal current_chunk, current_tokens
         if not current_chunk:
             return
 
-        # Find out if the chunk is of the form "subtitle: content"
-        parts = ' '.join(current_chunk).split(': ', 1)
-        if len(parts) == 2:
-            subtitle, content = parts[0], parts[1]
+        full_text = " ".join(current_chunk).strip()
+        parts = full_text.split(": ", 1)
+
+        # Split off a leading "subtitle: content" if present
+        if len(parts) == 2 and len(parts[0].split()) < 20:
+            subtitle, content = parts
         else:
-            subtitle, content = '', parts[0]
+            subtitle, content = "", full_text
 
         chunks.append({
-            'meta': {
-                'subtitle': subtitle,
-            },
-            'id': f'{article_id}-{len(chunks)}',
-            'content': content.strip()
+            "id": f"{article_id}-{len(chunks)}",
+            "content": content.strip(),
+            "meta": {
+                "article_id": article_id,
+                "date": meta.get("date", ""),
+                "subtitle": subtitle,
+            }
         })
-        current_chunk.clear()
+        # reset for next chunk
+        current_chunk = []
+        current_tokens = 0
 
     for excerpt in excerpts:
-        # Skip empty excerpts or recommendations if they still exist
-        if not excerpt.strip() or excerpt.startswith('Subscribe to'):
+        if is_boilerplate(excerpt):
             continue
 
-        next_iter_chunk_size = len(' '.join(current_chunk)) + len(excerpt)
-        if not chunk_size or next_iter_chunk_size > chunk_size:
-            process_current_chunk()
-            current_chunk = [excerpt]
-        else:
-            current_chunk.append(excerpt)
+        # how many tokens this excerpt uses
+        excerpt_tokens = tokenizer.count_tokens(excerpt)
 
-    # Add the last chunk if it exists
-    process_current_chunk()
+        # keep size strictly within the limit
+        next_iter_tokens = current_tokens + excerpt_tokens
+        if next_iter_tokens > max_tokens:
+            flush_chunk()
+
+        # add excerpt to the (new) current chunk
+        current_chunk.append(excerpt)
+        current_tokens += excerpt_tokens
+
+    # Flush any remaining text
+    flush_chunk()
+
+    # Annotate for better querying and debugging
+    total = len(chunks)
+    for idx, chunk in enumerate(chunks):
+        chunk["meta"]["chunk_idx"] = idx
+        chunk["meta"]["total_chunks"] = total
 
     return chunks
 
@@ -187,7 +236,11 @@ def scrape_article(url: str) -> tuple[dict, list[dict], dict]:
         a dictionary with image data (id and URL).;
     """
 
-    response = requests.get(url)
+    response = requests.get(url, headers={
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    })
     response.raise_for_status()
     soup = BeautifulSoup(response.text, 'html.parser').find('article')
 
@@ -205,9 +258,12 @@ def scrape_article(url: str) -> tuple[dict, list[dict], dict]:
         # Image is one-to-one with article (in future may be with chunks too)
         'id': meta["id"],
         'url': meta.pop('image'),
+        'meta': {
+            'article_id': meta["id"], # for quick search by where clause
+        }
     }
 
-    return meta, make_chunks(meta, excerpts), image
+    return meta, make_token_chunks(meta, excerpts), image
 
 
 def get_articles_links(api_limit: int = 100) -> list[str]:
@@ -296,9 +352,18 @@ def run_pipeline():
     :return: None
     """
 
-    texts = get_collection("texts")
-    images = get_collection("images", data_loader=ImageLoader())
-    articles = get_collection("articles", embedding_function=NoOpEmbeddingFunction())
+    texts = get_collection(
+        "texts",
+        embedding_function=embedding_factory('hf'),
+    )
+    images = get_collection(
+        "images",
+        data_loader=ImageLoader(),
+    )
+    articles = get_collection(
+        "articles",
+        embedding_function=embedding_factory('noop'),
+    )
 
     def process_article(url: str) -> None:
         """
