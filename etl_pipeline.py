@@ -111,10 +111,10 @@ def article_meta(
 
 
 def make_token_chunks(
-    meta: dict,
-    excerpts: list[str],
-    max_tokens: int = 512,
-    tokenizer_provider: str = "openai",
+        meta: dict,
+        excerpts: list[str],
+        max_tokens: int = 512,
+        tokenizer_provider: str = "openai",
 ) -> list[dict]:
     """
     Split the article content into token-limited chunks.
@@ -259,7 +259,7 @@ def scrape_article(url: str) -> tuple[dict, list[dict], dict]:
         'id': meta["id"],
         'url': meta.pop('image'),
         'meta': {
-            'article_id': meta["id"], # for quick search by where clause
+            'article_id': meta["id"],  # for quick search by where clause
         }
     }
 

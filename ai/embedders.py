@@ -1,5 +1,3 @@
-from typing import Optional
-
 import numpy as np
 from chromadb import EmbeddingFunction, Documents, Embeddings
 from chromadb.api import Embeddable
@@ -7,7 +5,7 @@ from chromadb.utils.embedding_functions import OpenCLIPEmbeddingFunction
 
 
 def embedding_factory(
-        embedding_function: Optional[str] = None
+        embedding_function: str | None = None
 ) -> EmbeddingFunction[Embeddable]:
     """
     Factory function to create an embedding function based on the provided name.
@@ -22,7 +20,7 @@ def embedding_factory(
             return OpenAIEmbeddingFunction()
         case "huggingface":
             return HuggingFaceEmbeddingFunction()
-        case _: # Default to OpenCLIPEmbeddingFunction
+        case _:  # Default to OpenCLIPEmbeddingFunction
             return OpenCLIPEmbeddingFunction()
 
 
