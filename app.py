@@ -1,8 +1,17 @@
+import sys
+import types
+
 import streamlit as st
 
 from ai.llm import OpenAIClient
 from ai.rag import rag_call
 from db import get_collection
+
+
+# Patch torch.classes to prevent Streamlit from scanning its __path__
+class DummyModule(types.ModuleType):
+    __path__ = []  # Fake path so Streamlit doesn't try to scan it
+sys.modules['torch.classes'] = DummyModule('torch.classes')
 
 
 def init_session_state():

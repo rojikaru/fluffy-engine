@@ -123,12 +123,11 @@ def rag_call(
         n_results=10,
     )
     # Metadatas are sliced by relevance to queries, we had one - we take one
-    excerpts = context_query['documents'][0]
     excerpts_metas = context_query['metadatas'][0]
     distances = context_query['distances'][0]
 
     # Cosine similarity threshold to determine if the question is relevant to text
-    ragable = distances[0] <= rag_threshold
+    ragable = distances and distances[0] <= rag_threshold
     if not ragable:
         # just call the LLM without any articles
         response_stream = _internal_llm_call(
