@@ -20,7 +20,7 @@ def init_session_state():
 
 
 def display_history():
-    for entry in st.session_state['chat_history']:
+    for idx, entry in enumerate(st.session_state['chat_history']):
         # User’s bubble
         st.chat_message("user").markdown(entry['query'])
 
@@ -33,82 +33,151 @@ def display_history():
         with assistant_msg:
             st.markdown(entry['response'])
 
+            # Display images if available
+            if entry.get('images', None):
+                st.markdown("\n\n### Images:\n")
+                for image in entry['images']:
+                    image_url = image.get('image', None)
+                    caption = image.get('title', 'Image')
+                    if image_url:
+                        st.image(image_url, caption=caption, use_column_width=True)
+
+        # Add a visual separator between messages
+        if idx < len(st.session_state['chat_history']) - 1:
+            st.markdown("---")
 
 
 def display_chat(
         query: str,
         stream,
         rag_used: bool,
-        articles
+        articles,
+        images,
 ):
-    # User’s bubble
-    st.chat_message("user").markdown(query)
+    with st.container():
+        # User’s bubble
+        st.chat_message("user").markdown(query)
 
-    # RAG notice
-    if not rag_used:
-        st.warning(
-            "RAG was not used. "
-            "Please, check your prompt and try again "
-            "if you expected RAG to be used."
-        )
+        # RAG notice
+        if not rag_used:
+            st.warning(
+                "RAG was not used. "
+                "Please, check your prompt and try again "
+                "if you expected RAG to be used."
+            )
 
-    # Create an assistant bubble and stream into it
-    assistant_msg = st.chat_message("assistant")
-    buffer = ""
-    with assistant_msg:
-        placeholder = st.empty()
-        for chunk in stream:
-            buffer += chunk
-            placeholder.markdown(buffer + "▌")
+        # Create an assistant bubble and stream into it
+        assistant_msg = st.chat_message("assistant")
+        buffer = ""
+        with assistant_msg:
+            placeholder = st.empty()
+            for chunk in stream:
+                buffer += chunk
+                placeholder.markdown(buffer + "▌")
 
-        # Display the articles used
-        if articles:
-            buffer += "\n\n### Articles used:\n"
-            for article in articles:
-                title = article.get('title', 'Reference')
-                url = article.get('canonical_url', '#')
-                buffer += f"- [{title}]({url})\n"
+            # Display the articles used
+            if articles:
+                buffer += "\n\n### Articles used:\n"
+                for article in articles:
+                    title = article.get('title', 'Reference')
+                    url = article.get('canonical_url', '#')
+                    buffer += f"- [{title}]({url})\n"
 
-        # final, without cursor
-        placeholder.markdown(buffer)
+            # final, without cursor
+            placeholder.markdown(buffer)
 
+            # display images if available
+            if images:
+                st.markdown("\n\n### Images:\n")
+                for image in images:
+                    image_url = image.get('image', None)
+                    caption = image.get('title', 'Image')
+                    if image_url:
+                        st.image(image_url, caption=caption, use_column_width=True)
 
-
-    return buffer
+        return buffer
 
 
 def main():
     st.title("Fluffy Engine - RAG Helper")
-    st.write(
-        'Hello! I am Fluffy, your RAG assistant. '
-        'I can help you answer questions using the latest AI Magazine articles.'
-    )
 
-    init_session_state()
+    with st.spinner("Loading Fluffy's database..."):
+        init_session_state()
 
-    query = st.text_input(
-        label="Ask me anything about AI Magazine articles:",
-        value="",
-    )
+    # Create a container for chat history
+    chat_container = st.container()
 
-    display_history()
-    if query:
-        # Call the RAG function
-        response, rag_used, articles = rag_call(
-            question=query,
-            llm=st.session_state['llm'],
-            stream=True,
-        )
+    # Create a container for input (this will be rendered at the bottom)
+    input_container = st.empty()
 
-        # Display the chat
-        response_text = display_chat(query, response, rag_used, articles)
+    # Display chat history in the chat container
+    with chat_container:
+        if st.session_state['chat_history']:
+            with st.spinner("Loading your chat history..."):
+                display_history()
+        else:
+            st.write(
+                'Hello! I am Fluffy, your RAG assistant. '
+                'I can help you answer questions using the latest AI Magazine articles.'
+            )
 
-        # Store the chat history
-        st.session_state['chat_history'].append({
-            'query': query,
-            'response': response_text,
-            'rag_used': rag_used
-        })
+        st.markdown("---")  # Visual separator
+
+    # Input form at the bottom
+    with input_container:
+        with st.form("chat_form", clear_on_submit=True):
+            col1, col2 = st.columns([4, 1])
+
+            with col1:
+                query = st.text_input(
+                    label="Ask me something =)",
+                    placeholder="Type your question here...",
+                    key="chat_input"
+                )
+
+            with col2:
+                # Spacer to align the button
+                st.markdown(
+                    "<div style='min-height: 28px;'></div>",
+                    unsafe_allow_html=True
+                )
+                submitted = st.form_submit_button(
+                    "Send",
+                    use_container_width=True,
+                )
+
+        if submitted and query:
+            st.markdown("---")  # Visual separator
+
+            # Spinner while searching DB and preparing response
+            with st.spinner("Searching the database..."):
+                # Call the RAG function (may take time)
+                response = rag_call(
+                    question=query,
+                    llm=st.session_state['llm'],
+                    stream=True,
+                )
+
+            # Display the chat with streaming response
+            response_text = display_chat(
+                query,
+                response.response,
+                response.rag_used,
+                response.articles,
+                response.images,
+            )
+
+            # Store in chat history
+            st.session_state['chat_history'].append({
+                'query': query,
+                'response': response_text,
+                'rag_used': response.rag_used,
+                'articles': response.articles,
+                'images': response.images,
+            })
+
+            # Rerun to update the display
+            st.rerun()
 
 
 if __name__ == "__main__":
