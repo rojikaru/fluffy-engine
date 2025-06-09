@@ -3,11 +3,18 @@ from typing import Literal, Any, Generator
 from pydantic import BaseModel
 
 from ai.llm import LLMClient, ChatResult
-from db import get_collection
+from db import get_collection, query_images_by_text
 
 
 class IsRAGableResponseSchema(BaseModel):
     label: Literal["RAGABLE", "NOT_RAGABLE"] = "NOT_RAGABLE"
+
+
+class RagResponseSchema(BaseModel):
+    response: ChatResult | Generator[str, None, None]
+    rag_used: bool = False
+    articles: list[dict] | None = None
+    images: list[str] | None = None
 
 
 # A zero-shot classifier to determine if a question
@@ -86,8 +93,10 @@ def rag_call(
                 "Use the following context from AI Magazine ‘The Batch’ to answer the question. "
         ),
         stream: bool = True,
+        rag_threshold: float = 0.75,
+        image_threshold: float = 0.75,
         **model_kwargs: Any,
-) -> tuple[ChatResult | Generator, bool, list[dict] | None]:
+) -> RagResponseSchema:
     """
     A function to perform a RAG (Retrieval-Augmented Generation) call.
     It uses the provided LLM client to answer a question based on context.
@@ -98,13 +107,15 @@ def rag_call(
     :param stream: Whether to stream the response or not.
     :param model_kwargs: Additional parameters to pass to the LLM model.
 
-    :return: Tuple with a response from the LLM,
+    :return: A data object with a response from the LLM,
              a flag if it used RAG or not,
-             and a list of articles used as context (if any).
+             a list of articles used as context (if any),
+             and a list of images related to the articles (if any).
     """
 
     texts_collection = get_collection("texts")
     articles_collection = get_collection("articles")
+    images_collection = get_collection("images")
 
     # Query the texts collection for relevant excerpts
     context_query = texts_collection.query(
@@ -117,17 +128,23 @@ def rag_call(
     distances = context_query['distances'][0]
 
     # Cosine similarity threshold to determine if the question is relevant to text
-    ragable = distances[0] <= 0.75
+    ragable = distances[0] <= rag_threshold
     if not ragable:
         # just call the LLM without any articles
-        return _internal_llm_call(
+        response_stream = _internal_llm_call(
             llm,
             system_prompt,
             question,
             articles=None,
             stream=stream,
             **model_kwargs
-        ), ragable, None
+        )
+        return RagResponseSchema(
+            response=response_stream,
+            rag_used=False,
+            articles=None,
+            images=None
+        )
 
     # Query articles that contain the found excerpts
     orig_articles_ids = list(set(map(lambda res: res['article_id'], excerpts_metas)))
@@ -137,6 +154,13 @@ def rag_call(
     )
     articles_titles, articles_meta = articles_query['documents'], articles_query['metadatas']
 
+    # Query related images from the articles
+    images = query_images_by_text(images_collection, question)
+    images_metas, images_dists = images['metadatas'][0], images['distances'][0]
+    images_metas = [meta
+                    for i, meta in enumerate(images_metas)
+                    if images_dists[i] <= image_threshold]
+
     for i, title in enumerate(articles_titles):
         # Convert to dict to ensure mutability
         d = dict(articles_meta[i])
@@ -144,11 +168,17 @@ def rag_call(
         articles_meta[i] = d
 
     # call out to the provided LLM client with the articles as context
-    return _internal_llm_call(
+    response_stream = _internal_llm_call(
         llm,
         system_prompt,
         question,
-        excerpts,
-        stream,
+        articles=articles_titles,
+        stream=stream,
         **model_kwargs
-    ), ragable, articles_meta
+    )
+    return RagResponseSchema(
+        response=response_stream,
+        rag_used=True,
+        articles=articles_meta,
+        images=[meta['url'] for meta in images_metas]
+    )
