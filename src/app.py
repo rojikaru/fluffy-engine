@@ -77,16 +77,11 @@ def articles_markdown(articles: list[dict] | None) -> str:
     return f"\n\n### Articles used:\n{links}"
 
 
-def stream_into(placeholder, stream) -> str | None:
-    """Render the stream with a cursor; on a provider error show it and return None."""
+def stream_into(placeholder, stream) -> str:
     buffer = ""
-    try:
-        for chunk in stream:
-            buffer += chunk
-            placeholder.markdown(buffer + "▌")
-    except openai.OpenAIError as error:
-        placeholder.error(f"The model request failed: {error}")
-        return None
+    for chunk in stream:
+        buffer += chunk
+        placeholder.markdown(buffer + "▌")
     return buffer
 
 
@@ -103,7 +98,7 @@ def display_history():
             st.markdown("---")
 
 
-def display_chat(query: str, stream, rag_used: bool, articles, images) -> str | None:
+def display_chat(query: str, stream, rag_used: bool, articles, images) -> str:
     with st.container():
         st.chat_message("user").markdown(query)
         if not rag_used:
@@ -114,10 +109,7 @@ def display_chat(query: str, stream, rag_used: bool, articles, images) -> str | 
             )
         with st.chat_message("assistant"):
             placeholder = st.empty()
-            answer = stream_into(placeholder, stream)
-            if answer is None:
-                return None
-            answer += articles_markdown(articles)
+            answer = stream_into(placeholder, stream) + articles_markdown(articles)
             placeholder.markdown(answer)
             show_images(images)
         return answer
@@ -150,6 +142,9 @@ def main():
                 'Hello! I am Fluffy, your RAG assistant. '
                 'I can help you answer questions using the latest AI Magazine articles.'
             )
+
+        if error := st.session_state.pop('error', None):
+            st.error(error)
 
         st.markdown("---")  # Visual separator
 
@@ -185,16 +180,18 @@ def main():
                     stream=True,
                 )
 
-            # Display the chat with streaming response
-            response_text = display_chat(
-                query,
-                response.response,
-                response.rag_used,
-                response.articles,
-                response.images,
-            )
-            if response_text is None:
-                return
+            try:
+                response_text = display_chat(
+                    query,
+                    response.response,
+                    response.rag_used,
+                    response.articles,
+                    response.images,
+                )
+            except openai.OpenAIError as error:
+                # The chat output replaced the form; rerun to bring it back and show the error
+                st.session_state['error'] = f"The model request failed: {error}"
+                st.rerun()
 
             # Store in chat history
             st.session_state['chat_history'].append({
