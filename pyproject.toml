@@ -29,17 +29,7 @@ dependencies = [
     # scraping / ETL
     "requests>=2.32",
     "beautifulsoup4>=4.13",
-    "nltk>=3.9",
     "tqdm>=4.67",
-    "unstructured>=0.27",
-    # langchain ETL variant
-    "langchain-core>=1.7",
-    "langchain-text-splitters>=1.1",
-    "langchain-community>=0.4",
-    "langchain-experimental>=0.4",
-    "langchain-openai>=1.7",
-    "langchain-huggingface>=1.2",
-    "langchain-chroma>=1.1",
 ]
 
 [tool.uv]

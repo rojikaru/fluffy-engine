@@ -56,13 +56,7 @@ Required environment variables:
    Run the ETL pipeline to fetch and index news articles.
 
    ```bash
-   uv run python -m src.etl_pipeline
-   ```
-
-   Also, there is langchain implementation of the ETL pipeline:
-
-   ```bash
-   uv run python -m src.etl_langchain
+   uv run python -m src.etl
    ```
 
 2. **Client application:**
@@ -70,6 +64,13 @@ Required environment variables:
 
     ```bash
     uv run python -m streamlit run src/app.py
+    ```
+
+3. **Docker** (CPU-only PyTorch):
+
+    ```bash
+    docker build -t fluffy-engine .
+    docker run --env-file .env -p 8501:8501 fluffy-engine
     ```
 
    > Run all commands from the repository root: modules are imported as `src.*`,
