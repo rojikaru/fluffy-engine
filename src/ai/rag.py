@@ -22,7 +22,6 @@ class RagResponseSchema(BaseModel):
 # It is a prototype that filters out junk,
 # like "What is the weather today?" or "How to cook pasta?",
 # but it is too strict for now.
-# TODO: make it more flexible and allow more questions.
 def is_ragable(
         question: str,
         llm: LLMClient,
@@ -62,23 +61,35 @@ def is_ragable(
     return resp.label == "RAGABLE"
 
 
-def relevant_excerpts(collection, question: str, threshold: float, n_results: int = 10) -> list[tuple[str, dict]]:
+def relevant_excerpts(
+        collection,
+        question: str,
+        threshold: float,
+        margin: float,
+        n_results: int = 10,
+) -> list[tuple[str, dict]]:
     """
-    Return (text, metadata) of chunks within `threshold`, most relevant first.
-    Distances are squared L2 over unit vectors: d = 2 - 2 * cosine similarity.
+    Return (text, metadata) of chunks within `threshold` and within `margin` of the best hit,
+    most relevant first. Distances are squared L2 over unit vectors: d = 2 - 2 * cosine similarity.
+    The margin drops loosely related chunks (same company, different story) that sit just
+    under the absolute threshold when one article clearly answers the question.
     """
     result = collection.query(
         query_texts=[question],
         n_results=n_results,
         include=["documents", "metadatas", "distances"],
     )
-    hits = zip(result['documents'][0], result['metadatas'][0], result['distances'][0])
-    return [(text, meta) for text, meta, distance in hits if distance <= threshold]
+    distances = result['distances'][0]
+    cutoff = min(threshold, distances[0] + margin) if distances else threshold
+    hits = zip(result['documents'][0], result['metadatas'][0], distances)
+    return [(text, meta) for text, meta, distance in hits if distance <= cutoff]
 
 
 def source_articles(collection, excerpts: list[tuple[str, dict]]) -> dict[str, dict]:
     """Metadata of the articles the excerpts come from, keyed by id, in relevance order."""
     ids = list(dict.fromkeys(meta['article_id'] for _, meta in excerpts))
+    if not ids:
+        return {}
     found = collection.get(ids=ids, include=["metadatas"])
     by_id = dict(zip(found['ids'], found['metadatas']))
     return {article_id: by_id[article_id] for article_id in ids if article_id in by_id}
