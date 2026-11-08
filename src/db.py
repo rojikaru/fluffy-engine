@@ -42,7 +42,7 @@ def _embed_texts(texts: list[str]) -> np.ndarray:
     inputs = _processor(text=texts, return_tensors="pt", padding=True)
     inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
     with torch.no_grad():
-        feats = _model.get_text_features(**inputs)
+        feats = model.get_text_features(**inputs).pooler_output
     return feats.cpu().numpy()
 
 
