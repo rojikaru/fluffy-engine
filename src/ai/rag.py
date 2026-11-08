@@ -2,8 +2,8 @@ from typing import Literal, Any, Generator
 
 from pydantic import BaseModel
 
-from ai.llm import LLMClient, ChatResult
-from db import get_collection, query_images_by_text
+from src.ai.llm import LLMClient, ChatResult
+from src.db import get_collection, query_images_by_text
 
 
 class IsRAGableResponseSchema(BaseModel):

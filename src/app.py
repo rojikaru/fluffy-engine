@@ -3,9 +3,9 @@ import types
 
 import streamlit as st
 
-from ai.llm import OpenAIClient
-from ai.rag import rag_call
-from db import get_collection
+from src.ai.llm import OpenAIClient
+from src.ai.rag import rag_call
+from src.db import get_collection
 
 
 # Patch torch.classes to prevent Streamlit from scanning its __path__

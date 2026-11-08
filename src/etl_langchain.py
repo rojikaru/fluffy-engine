@@ -8,8 +8,8 @@ import dotenv
 import nltk
 from bs4 import BeautifulSoup
 from langchain_community.document_loaders import UnstructuredURLLoader
-from langchain.schema import Document
-from langchain.text_splitter import TextSplitter
+from langchain_core.documents import Document
+from langchain_text_splitters import TextSplitter
 from langchain_community.embeddings import VertexAIEmbeddings
 from langchain_experimental.open_clip import OpenCLIPEmbeddings
 from langchain_openai import OpenAIEmbeddings
@@ -19,7 +19,7 @@ from PIL import Image
 import requests
 import numpy as np
 
-from etl_pipeline import get_articles_links
+from src.etl_pipeline import get_articles_links
 
 dotenv.load_dotenv()
 

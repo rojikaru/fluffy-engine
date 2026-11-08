@@ -14,9 +14,9 @@ from bs4 import BeautifulSoup
 from chromadb.utils.data_loaders import ImageLoader
 from tqdm import tqdm
 
-from ai.embedders import embedding_factory
-from ai.tokenizers import tokenizer_factory
-from db import get_collection
+from src.ai.embedders import embedding_factory
+from src.ai.tokenizers import tokenizer_factory
+from src.db import get_collection
 
 dotenv.load_dotenv()
 

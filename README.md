@@ -26,42 +26,54 @@ A Retrieval-Augmented Generation (RAG) system enriched with news from [The Batch
 ## Installation
 
 1. **Clone the repository:**
+
    ```bash
    git clone https://github.com/rojikaru/fluffy-engine.git
    cd fluffy-engine
     ```
+
 2. **Install dependencies:**
+
     ```bash
-    pip install -r requirements.txt
+    uv sync
     ```
 
 ## Configuration  
+
 Before running the application, you need to configure your environment variables.
 Create a `.env` file in the root directory and add your configuration settings, such as API keys and database URLs.  
 Required environment variables:
+
   ```plaintext
-  BATCH_API_KEY=your_api_key_here
   OPENAI_API_KEY=your_database_url_here
 
-  ; Add huggingface/google/anthropic API keys if needed
+  # Add huggingface/google/anthropic API keys if needed
   ```
 
 ## Usage
 
 1. **Extract - transform - load (ETL):**  
    Run the ETL pipeline to fetch and index news articles.
+
    ```bash
-   python etl_pipeline.py
+   uv run python -m src.etl_pipeline
    ```
+
    Also, there is langchain implementation of the ETL pipeline:
+
    ```bash
-    python langchain_etl_pipeline.py
-    ```
+   uv run python -m src.etl_langchain
+   ```
+
 2. **Client application:**
     Start the Streamlit app to handle queries.
+
     ```bash
-    streamlit run app.py
+    uv run python -m streamlit run src/app.py
     ```
+
+   > Run all commands from the repository root: modules are imported as `src.*`,
+   > so plain `streamlit run src/app.py` fails with `ModuleNotFoundError: src`.
 
 ## Contributing  
 

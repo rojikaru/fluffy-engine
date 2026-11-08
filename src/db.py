@@ -15,7 +15,7 @@ from chromadb import EmbeddingFunction
 import torch
 from transformers import CLIPProcessor, CLIPModel
 
-from ai.embedders import embedding_factory
+from src.ai.embedders import embedding_factory
 
 dotenv.load_dotenv()
 

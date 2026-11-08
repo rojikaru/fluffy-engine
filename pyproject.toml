@@ -1,0 +1,56 @@
+[project]
+name = "fluffy-engine"
+version = "0.1.0"
+description = "Multimodal RAG over The Batch news articles"
+readme = "README.md"
+authors = [
+    { name = "Alex Horyshevskyi", email = "oleksii120@gmail.com" }
+]
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    # app
+    "streamlit>=1.67",
+    "python-dotenv>=1.1",
+    "pydantic>=2.11",
+    # LLM
+    "openai>=3.46",
+    "tiktoken>=0.9",
+    # vector store
+    "chromadb>=1.5",
+    "pysqlite3-binary>=0.5.4",
+    # ML / embeddings
+    "torch>=2.15",
+    "torchvision>=0.29",
+    "transformers>=5.22",
+    "sentence-transformers>=6.2",
+    "open-clip-torch>=4.2",
+    "numpy>=2.3",
+    "pillow>=11.2",
+    # scraping / ETL
+    "requests>=2.32",
+    "beautifulsoup4>=4.13",
+    "nltk>=3.9",
+    "tqdm>=4.67",
+    "unstructured>=0.27",
+    # langchain ETL variant
+    "langchain-core>=1.7",
+    "langchain-text-splitters>=1.1",
+    "langchain-community>=0.4",
+    "langchain-experimental>=0.4",
+    "langchain-openai>=1.7",
+    "langchain-huggingface>=1.2",
+    "langchain-chroma>=1.1",
+]
+
+[tool.uv]
+# Not an installable package: modules are imported as `src.*` from the repo root.
+package = false
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu134" }
+torchvision = { index = "pytorch-cu134" }
+
+[[tool.uv.index]]
+name = "pytorch-cu134"
+url = "https://download.pytorch.org/whl/cu134"
+explicit = true
