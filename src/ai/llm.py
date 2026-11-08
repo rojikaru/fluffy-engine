@@ -1,10 +1,9 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol, Any, Generator, TypeVar
 
 import dotenv
 import openai
-from openai.types.responses import ResponseTextDeltaEvent
 from pydantic import BaseModel
 
 dotenv.load_dotenv()
@@ -105,6 +104,10 @@ class LLMClient(Protocol):
         ...
 
 
+def as_messages(messages: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{"role": "user", "content": messages}] if isinstance(messages, str) else messages
+
+
 class OpenAIClient:
     """
     A client for any OpenAI-compatible Chat Completions API: OpenAI, Ollama, Docker Model Runner.
@@ -115,23 +118,27 @@ class OpenAIClient:
         self.model = self.config.model
         self.client = openai.OpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
+    def _request(self, messages: str | list[dict[str, Any]], kwargs: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "messages": as_messages(messages),
+            "extra_body": self.config.extra_body,
+            **kwargs,
+        }
+
     def chat(
             self,
             messages: str | list[dict[str, str]],
             **kwargs: Any
     ) -> ChatResult:
-        response = self.client.responses.create(
-            model=kwargs.get("model", self.model),
-            input=messages,
-            stream=False,
-            **kwargs
-        )
+        response = self.client.chat.completions.create(**self._request(messages, kwargs))
+        message = response.choices[0].message
         return ChatResult(
             id=response.id,
             model=response.model,
-            text=response.output_text,
-            usage=response.usage.model_dump(),
-            message=response.output[0].model_dump(),
+            text=message.content or "",
+            usage=response.usage.model_dump() if response.usage else {},
+            message=message.model_dump(),
             original_response=response.model_dump(),
         )
 
@@ -141,28 +148,15 @@ class OpenAIClient:
             schema: type[BaseModel],
             **kwargs: Any
     ) -> BaseModel:
-        response = self.client.responses.parse(
-            model=kwargs.get("model", self.model),
-            input=messages,
-            text_format=schema,
-            stream=False,
-            **kwargs
-        )
-        return response.output_parsed
+        response = self.client.chat.completions.parse(response_format=schema, **self._request(messages, kwargs))
+        return response.choices[0].message.parsed
 
     def stream(
             self,
             messages: str | list[dict],
             **kwargs: Any
     ) -> Generator[str, None, None]:
-        response = self.client.responses.create(
-            model=self.model,
-            input=messages,
-            stream=True,
-            **kwargs
-        )
-
-        # yield responses from OpenAI's streaming API
-        for event in response:
-            if isinstance(event, ResponseTextDeltaEvent):
-                yield event.delta
+        response = self.client.chat.completions.create(stream=True, **self._request(messages, kwargs))
+        for chunk in response:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
