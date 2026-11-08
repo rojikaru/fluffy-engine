@@ -9,36 +9,12 @@ from datetime import datetime, timezone
 from functools import cache
 
 import dotenv
-import numpy as np
 import chromadb
 from chromadb import EmbeddingFunction
 
-import torch
-from transformers import CLIPProcessor, CLIPModel
-
-from src.ai.embedders import DEVICE, EmbedderName, embedding_factory
+from src.ai.embedders import EmbedderName, embedding_factory
 
 dotenv.load_dotenv()
-
-
-CLIP_MODEL = "openai/clip-vit-base-patch32"
-
-
-@cache
-def _clip() -> tuple[CLIPProcessor, CLIPModel]:
-    processor = CLIPProcessor.from_pretrained(CLIP_MODEL, use_safetensors=True)
-    model = CLIPModel.from_pretrained(CLIP_MODEL, use_safetensors=True, dtype=torch.float32)
-    return processor, model.to(DEVICE).eval()
-
-
-def _embed_texts(texts: list[str]) -> np.ndarray:
-    """Run CLIP text encoder and return a NumPy array of shape (len(texts), embed_dim)."""
-    processor, model = _clip()
-    inputs = processor(text=texts, return_tensors="pt", padding=True)
-    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
-    with torch.no_grad():
-        feats = model.get_text_features(**inputs).pooler_output
-    return feats.cpu().numpy()
 
 
 COLLECTION_EMBEDDINGS: dict[str, EmbedderName] = {
@@ -94,24 +70,3 @@ def get_collection(collection_name: str, **kwargs: any) -> chromadb.Collection:
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
     )
-
-
-def query_images_by_text(
-    collection: chromadb.Collection,
-    text_query: str,
-    n_results: int = 3,
-):
-    """
-    Find the top-n images in `collection` whose embeddings match `text_query`.
-    """
-    # 1) embed the query text
-    q_emb = _embed_texts([text_query]).tolist()
-
-    # 2) query chromadb
-    result = collection.query(
-        query_embeddings=q_emb,
-        n_results=n_results,
-        include=["metadatas", "distances", "documents"],
-    )
-
-    return result

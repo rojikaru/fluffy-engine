@@ -3,7 +3,7 @@ from typing import Literal, Any, Generator
 from pydantic import BaseModel
 
 from src.ai.llm import LLMClient, ChatResult
-from src.db import get_collection, query_images_by_text
+from src.db import get_collection
 
 
 class IsRAGableResponseSchema(BaseModel):
@@ -14,7 +14,7 @@ class RagResponseSchema(BaseModel):
     response: ChatResult | Generator[str, None, None]
     rag_used: bool = False
     articles: list[dict] | None = None
-    images: list[str] | None = None
+    images: list[dict] | None = None
 
 
 # A zero-shot classifier to determine if a question
@@ -84,6 +84,30 @@ def source_articles(collection, excerpts: list[tuple[str, dict]]) -> dict[str, d
     return {article_id: by_id[article_id] for article_id in ids if article_id in by_id}
 
 
+def article_images(collection, question: str, articles: dict[str, dict], n_results: int = 3) -> list[dict]:
+    """
+    Hero images of the source articles, ranked by text-to-image similarity with the question.
+    Restricting to source articles avoids a global threshold: CLIP text-to-image distances
+    cluster too tightly (about 0.70 for a match vs 0.80+ otherwise) to cut reliably.
+    """
+    if not articles:
+        return []
+    result = collection.query(
+        query_texts=[question],
+        n_results=min(n_results, len(articles)),
+        where={"article_id": {"$in": list(articles)}},
+        include=["metadatas"],
+    )
+    return [
+        {
+            "url": meta["url"],
+            "title": articles[meta["article_id"]].get("title", ""),
+            "canonical_url": articles[meta["article_id"]].get("canonical_url", ""),
+        }
+        for meta in result["metadatas"][0]
+    ]
+
+
 def format_context(excerpts: list[tuple[str, dict]], articles: dict[str, dict]) -> str:
     def block(text: str, meta: dict) -> str:
         article = articles.get(meta['article_id'], {})
@@ -123,7 +147,6 @@ def rag_call(
         ),
         stream: bool = True,
         rag_threshold: float = 0.75,
-        image_threshold: float = 0.75,
         **model_kwargs: Any,
 ) -> RagResponseSchema:
     """
@@ -153,13 +176,6 @@ def rag_call(
 
     articles = source_articles(articles_collection, excerpts)
 
-    # Query related images from the articles
-    images = query_images_by_text(images_collection, question)
-    images_metas, images_dists = images['metadatas'][0], images['distances'][0]
-    images_metas = [meta
-                    for i, meta in enumerate(images_metas)
-                    if images_dists[i] <= image_threshold]
-
     response_stream = _internal_llm_call(
         llm,
         system_prompt,
@@ -172,5 +188,5 @@ def rag_call(
         response=response_stream,
         rag_used=True,
         articles=list(articles.values()),
-        images=[meta['url'] for meta in images_metas]
+        images=article_images(images_collection, question, articles),
     )

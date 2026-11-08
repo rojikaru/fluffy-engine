@@ -342,7 +342,7 @@ def run_pipeline():
                 # Convert image URL to PIL image (required by OpenCLIP)
                 # And convert it to numpy array  (required by ChromaDB)
                 images=[np.array(image_url_to_pil(image['url']))],
-                metadatas=[{'url': image['url']}],
+                metadatas=[{**image['meta'], 'url': image['url']}],
             )
 
         # Sleep to be respectful & avoid hitting API limits

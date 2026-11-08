@@ -1,6 +1,7 @@
 import sys
 import types
 
+import openai
 import streamlit as st
 
 from src.ai.llm import LLMConfig, OpenAIClient, PROVIDERS, config_from_env, env_provider
@@ -61,83 +62,65 @@ def get_llm(config: LLMConfig) -> OpenAIClient:
     return llm
 
 
-def display_history():
-    for idx, entry in enumerate(st.session_state['chat_history']):
-        # User’s bubble
-        st.chat_message("user").markdown(entry['query'])
+def show_images(images: list[dict] | None) -> None:
+    if not images:
+        return
+    st.markdown("### Images")
+    for image in images:
+        st.image(image['url'], caption=image.get('title') or None, width="stretch")
 
-        # RAG notice
+
+def articles_markdown(articles: list[dict] | None) -> str:
+    if not articles:
+        return ""
+    links = "".join(f"- [{a.get('title', 'Reference')}]({a.get('canonical_url', '#')})\n" for a in articles)
+    return f"\n\n### Articles used:\n{links}"
+
+
+def stream_into(placeholder, stream) -> str | None:
+    """Render the stream with a cursor; on a provider error show it and return None."""
+    buffer = ""
+    try:
+        for chunk in stream:
+            buffer += chunk
+            placeholder.markdown(buffer + "▌")
+    except openai.OpenAIError as error:
+        placeholder.error(f"The model request failed: {error}")
+        return None
+    return buffer
+
+
+def display_history():
+    history = st.session_state['chat_history']
+    for idx, entry in enumerate(history):
+        st.chat_message("user").markdown(entry['query'])
         if not entry['rag_used']:
             st.warning("RAG was not used.")
-
-        # Create an assistant bubble and stream into it
-        assistant_msg = st.chat_message("assistant")
-        with assistant_msg:
+        with st.chat_message("assistant"):
             st.markdown(entry['response'])
-
-            # Display images if available
-            if entry.get('images', None):
-                st.markdown("\n\n### Images:\n")
-                for image in entry['images']:
-                    image_url = image.get('image', None)
-                    caption = image.get('title', 'Image')
-                    if image_url:
-                        st.image(image_url, caption=caption, use_column_width=True)
-
-        # Add a visual separator between messages
-        if idx < len(st.session_state['chat_history']) - 1:
+            show_images(entry.get('images'))
+        if idx < len(history) - 1:
             st.markdown("---")
 
 
-def display_chat(
-        query: str,
-        stream,
-        rag_used: bool,
-        articles,
-        images,
-):
+def display_chat(query: str, stream, rag_used: bool, articles, images) -> str | None:
     with st.container():
-        # User’s bubble
         st.chat_message("user").markdown(query)
-
-        # RAG notice
         if not rag_used:
             st.warning(
                 "RAG was not used. "
                 "Please, check your prompt and try again "
                 "if you expected RAG to be used."
             )
-
-        # Create an assistant bubble and stream into it
-        assistant_msg = st.chat_message("assistant")
-        buffer = ""
-        with assistant_msg:
+        with st.chat_message("assistant"):
             placeholder = st.empty()
-            for chunk in stream:
-                buffer += chunk
-                placeholder.markdown(buffer + "▌")
-
-            # Display the articles used
-            if articles:
-                buffer += "\n\n### Articles used:\n"
-                for article in articles:
-                    title = article.get('title', 'Reference')
-                    url = article.get('canonical_url', '#')
-                    buffer += f"- [{title}]({url})\n"
-
-            # final, without cursor
-            placeholder.markdown(buffer)
-
-            # display images if available
-            if images:
-                st.markdown("\n\n### Images:\n")
-                for image in images:
-                    image_url = image.get('image', None)
-                    caption = image.get('title', 'Image')
-                    if image_url:
-                        st.image(image_url, caption=caption, use_column_width=True)
-
-        return buffer
+            answer = stream_into(placeholder, stream)
+            if answer is None:
+                return None
+            answer += articles_markdown(articles)
+            placeholder.markdown(answer)
+            show_images(images)
+        return answer
 
 
 def main():
@@ -188,10 +171,7 @@ def main():
                     "<div style='min-height: 28px;'></div>",
                     unsafe_allow_html=True
                 )
-                submitted = st.form_submit_button(
-                    "Send",
-                    use_container_width=True,
-                )
+                submitted = st.form_submit_button("Send", width="stretch")
 
         if submitted and query:
             st.markdown("---")  # Visual separator
@@ -213,6 +193,8 @@ def main():
                 response.articles,
                 response.images,
             )
+            if response_text is None:
+                return
 
             # Store in chat history
             st.session_state['chat_history'].append({
