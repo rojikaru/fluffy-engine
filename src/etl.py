@@ -1,3 +1,4 @@
+import argparse
 import json
 import re
 import time
@@ -99,6 +100,11 @@ def first_image(ld: dict, soup: BeautifulSoup) -> str:
     return images[0] if images else meta_content(soup, 'og:image')
 
 
+def article_id(url: str) -> str:
+    """Deterministic id, so re-runs update an article instead of duplicating it."""
+    return uuid.uuid5(uuid.NAMESPACE_URL, url.rstrip('/') + '/').hex
+
+
 def article_meta(soup: BeautifulSoup, canonical_url: str, related_links: list[str]) -> dict[str, str]:
     """
     Extract article metadata from JSON-LD, falling back to og:/article: meta tags.
@@ -107,7 +113,7 @@ def article_meta(soup: BeautifulSoup, canonical_url: str, related_links: list[st
     """
     ld = json_ld_article(soup)
     return {
-        'id': uuid.uuid4().hex,
+        'id': article_id(canonical_url),
         'title': ld.get('headline') or meta_content(soup, 'og:title'),
         'description': ld.get('description') or meta_content(soup, 'og:description'),
         'date': format_date(ld.get('datePublished') or meta_content(soup, 'article:published_time')),
@@ -298,88 +304,85 @@ def image_url_to_pil(image_url: str, max_size: int | None = 512) -> Image.Image:
     return pil_image
 
 
-def run_pipeline():
-    """
-    Run the ETL pipeline to scrape articles, extract metadata, and store them in the database.
-    :return: None
-    """
+def store_article(collections: dict, meta: dict, chunks: list[dict], image: dict) -> None:
+    articles, texts, images = collections['articles'], collections['texts'], collections['images']
+    meta = dict(meta)
+    article_key, description = meta.pop('id'), meta.pop('description', '')
 
-    texts = get_collection("texts")
-    images = get_collection(
-        "images",
-        data_loader=ImageLoader(),
+    # A re-scraped article may have fewer chunks than before
+    texts.delete(where={'article_id': article_key})
+    texts.upsert(
+        ids=[chunk['id'] for chunk in chunks],
+        documents=[chunk['content'] for chunk in chunks],
+        metadatas=[chunk['meta'] for chunk in chunks],
     )
-    articles = get_collection("articles")
-
-    def process_article(url: str) -> None:
-        """
-        Process a single article URL, scrape it, and store the data in the database.
-        :param url: URL of the article to process.
-        :return: None
-        """
-
-        meta, chunks, image = scrape_article(url)
-
-        # Insert article metadata
-        article_id, description = meta.pop("id"), meta.pop("description", "")
-        articles.add(
-            ids=[article_id],
-            documents=[description],
-            metadatas=[meta],
+    if image['url']:
+        images.upsert(
+            ids=[image['id']],
+            # OpenCLIP needs a PIL image; Chroma takes it as a numpy array
+            images=[np.array(image_url_to_pil(image['url']))],
+            metadatas=[{**image['meta'], 'url': image['url']}],
         )
+    # Written last: resume treats an existing article record as fully stored
+    articles.upsert(ids=[article_key], documents=[description], metadatas=[meta])
 
-        # Insert chunks
-        texts.add(
-            ids=[chunk['id'] for chunk in chunks],
-            documents=[chunk['content'] for chunk in chunks],
-            metadatas=[chunk['meta'] for chunk in chunks],
-        )
 
-        # Insert image if it exists
-        if image['url']:
-            images.add(
-                ids=[image['id']],
-                # Convert image URL to PIL image (required by OpenCLIP)
-                # And convert it to numpy array  (required by ChromaDB)
-                images=[np.array(image_url_to_pil(image['url']))],
-                metadatas=[{**image['meta'], 'url': image['url']}],
-            )
+def already_ingested(articles, links: list[str]) -> set[str]:
+    ids = {article_id(link): link for link in links}
+    found = articles.get(ids=list(ids), include=[]) if ids else {'ids': []}
+    return {ids[found_id] for found_id in found['ids']}
 
-        # Sleep to be respectful & avoid hitting API limits
+
+def process_all(links: list[str], process, desc: str) -> list[str]:
+    """Run `process` on every link, returning the ones that failed."""
+    failed = []
+    for link in tqdm(links, unit="article", desc=desc):
+        try:
+            process(link)
+        except Exception as error:
+            tqdm.write(f"Failed to process {link}: {error}")
+            failed.append(link)
+        # Be respectful to the site
         time.sleep(2)
+    return failed
 
-    links, failed_links = get_articles_links(), []
-    for article in tqdm(
-            links,
-            unit="article",
-            total=len(links),
-            desc="Scraping articles"
-    ):
-        try:
-            process_article(article)
-        except (requests.HTTPError, requests.ConnectionError):
-            failed_links.append(article)
-        except Exception as e:
-            print(f"Failed to process {article}: {e}")
-            failed_links.append(article)
 
-    if not failed_links:
-        print("All articles processed successfully!")
-        return
+def run_pipeline(limit: int | None = None, refresh: bool = False) -> None:
+    """
+    Scrape articles and store their metadata, text chunks and image in the database.
 
-    print(f"Failed to process {len(failed_links)} articles:")
-    print('\n'.join(failed_links))
+    :param limit: Process at most this many links (after skipping already ingested ones).
+    :param refresh: Re-scrape articles that are already in the database.
+    """
+    collections = {
+        'texts': get_collection('texts'),
+        'images': get_collection('images', data_loader=ImageLoader()),
+        'articles': get_collection('articles'),
+    }
 
-    for failed_link in tqdm(
-            failed_links,
-            unit="article",
-            desc="Retrying failed articles"
-    ):
-        try:
-            process_article(failed_link)
-        except (requests.HTTPError, requests.ConnectionError):
-            print(f"Failed to process {failed_link} again. Skipping.")
+    links = get_articles_links()
+    if not refresh:
+        done = already_ingested(collections['articles'], links)
+        links = [link for link in links if link not in done]
+        print(f"Skipping {len(done)} already ingested articles.")
+    links = links[:limit]
+
+    def process(url: str) -> None:
+        store_article(collections, *scrape_article(url))
+
+    failed = process_all(links, process, "Scraping articles")
+    if failed:
+        print(f"Retrying {len(failed)} failed articles.")
+        failed = process_all(failed, process, "Retrying failed articles")
+
+    print(f"Done: {len(links) - len(failed)}/{len(links)} articles stored.")
+    if failed:
+        print("Still failing:\n" + "\n".join(failed))
 
 
 if __name__ == "__main__":
-    run_pipeline()
+    parser = argparse.ArgumentParser(description="Scrape The Batch articles into ChromaDB.")
+    parser.add_argument("--limit", type=int, help="process at most N new articles")
+    parser.add_argument("--refresh", action="store_true", help="re-scrape articles already in the database")
+    args = parser.parse_args()
+    run_pipeline(limit=args.limit, refresh=args.refresh)
