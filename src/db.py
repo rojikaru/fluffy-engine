@@ -6,6 +6,7 @@ sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 import os
 from datetime import datetime, timezone
+from functools import cache
 
 import dotenv
 import numpy as np
@@ -15,31 +16,25 @@ from chromadb import EmbeddingFunction
 import torch
 from transformers import CLIPProcessor, CLIPModel
 
-from src.ai.embedders import embedding_factory
+from src.ai.embedders import DEVICE, embedding_factory
 
 dotenv.load_dotenv()
 
 
-# Torch processor setup
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-_processor = CLIPProcessor.from_pretrained(
-    "openai/clip-vit-base-patch32",
-    use_safetensors=True,
-)
-_model = (CLIPModel
-          .from_pretrained(
-              "openai/clip-vit-base-patch32",
-              use_safetensors=True,
-              torch_dtype=torch.float32,
-          )
-          .to(DEVICE)
-          .eval()
-)
+CLIP_MODEL = "openai/clip-vit-base-patch32"
+
+
+@cache
+def _clip() -> tuple[CLIPProcessor, CLIPModel]:
+    processor = CLIPProcessor.from_pretrained(CLIP_MODEL, use_safetensors=True)
+    model = CLIPModel.from_pretrained(CLIP_MODEL, use_safetensors=True, dtype=torch.float32)
+    return processor, model.to(DEVICE).eval()
 
 
 def _embed_texts(texts: list[str]) -> np.ndarray:
     """Run CLIP text encoder and return a NumPy array of shape (len(texts), embed_dim)."""
-    inputs = _processor(text=texts, return_tensors="pt", padding=True)
+    processor, model = _clip()
+    inputs = processor(text=texts, return_tensors="pt", padding=True)
     inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
     with torch.no_grad():
         feats = model.get_text_features(**inputs).pooler_output

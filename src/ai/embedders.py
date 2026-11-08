@@ -1,7 +1,12 @@
+import os
+
 import numpy as np
+import torch
 from chromadb import EmbeddingFunction, Documents, Embeddings
 from chromadb.api import Embeddable
 from chromadb.utils.embedding_functions import OpenCLIPEmbeddingFunction
+
+DEVICE = os.getenv('TORCH_DEVICE') or ('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def embedding_factory(
@@ -21,7 +26,7 @@ def embedding_factory(
         case "huggingface":
             return HuggingFaceEmbeddingFunction()
         case _:  # Default to OpenCLIPEmbeddingFunction
-            return OpenCLIPEmbeddingFunction()
+            return OpenCLIPEmbeddingFunction(device=DEVICE)
 
 
 class NoOpEmbeddingFunction(EmbeddingFunction[Embeddable]):

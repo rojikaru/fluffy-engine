@@ -4,7 +4,7 @@ import time
 import uuid
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import unquote
+from datetime import datetime
 import dotenv
 import numpy as np
 import requests
@@ -61,64 +61,62 @@ def is_boilerplate(excerpt: str) -> bool:
     return False
 
 
-def article_meta(
-        soup: bs4.PageElement | bs4.Tag | bs4.NavigableString,
-        **kwargs
-) -> dict[str, str]:
-    """
-    Extract metadata from the article soup.
+DATE = re.compile(r'[A-Z][a-z]{2} \d{1,2}, \d{4}')
 
-    :param soup: BeautifulSoup object containing the article HTML.
-    :keyword related_links: List of related links to include in the metadata.
-    :keyword canonical_url: Canonical URL of the article.
+
+def json_ld_article(soup: BeautifulSoup) -> dict:
+    for script in soup.find_all('script', type='application/ld+json'):
+        data = json.loads(script.string or '{}')
+        if data.get('@type') in ('NewsArticle', 'Article'):
+            return data
+    return {}
+
+
+def meta_content(soup: BeautifulSoup, prop: str) -> str:
+    tag = soup.find('meta', property=prop) or soup.find('meta', attrs={'name': prop})
+    return tag.get('content', '') if tag else ''
+
+
+def format_date(iso_date: str) -> str:
+    return datetime.fromisoformat(iso_date).strftime('%b %d, %Y') if iso_date else ''
+
+
+def format_reading_time(duration: str) -> str:
+    """ISO 8601 duration such as `PT5M` -> `5 min read`."""
+    minutes = re.fullmatch(r'PT(\d+)M', duration or '')
+    return f'{minutes[1]} min read' if minutes else ''
+
+
+def article_tags(keywords: str) -> list[str]:
+    # Older posts carry the publish date in `keywords` instead of real tags
+    tags = (tag.strip() for tag in DATE.sub('', keywords).split(','))
+    return [tag for tag in tags if tag]
+
+
+def first_image(ld: dict, soup: BeautifulSoup) -> str:
+    images = ld.get('image') or []
+    if isinstance(images, str):
+        images = [images]
+    return images[0] if images else meta_content(soup, 'og:image')
+
+
+def article_meta(soup: BeautifulSoup, canonical_url: str, related_links: list[str]) -> dict[str, str]:
+    """
+    Extract article metadata from JSON-LD, falling back to og:/article: meta tags.
+
     :return: Dictionary containing article metadata.
     """
-
-    # h1 contains the title and a span with description
-    h1 = soup.find('h1')
-    description = h1.find('span')
-    if description:
-        description = description.extract().get_text(strip=True)
-    else:
-        description = ''
-
-    # Remove the navigation bar to get cleaner links
-    _nav = soup.find('nav').extract()
-
-    links = soup.find_all('a')
-    date_link = links.pop()  # The last link is the date
-
-    # Get reading time
-    reading_time = ' '.join(
-        soup.find(string=re.compile(r'read')).parent.stripped_strings
-    )
-
-    # Account for lazy loading images (especially in Ghost CMS run on Next.js)
-    image = (soup.find('noscript') or soup).find('img')
-    if image and image['src'].startswith('/_next/image/?url='):
-        # If its Next.js lazy loaded image, extract the encoded URL
-        # And remove parameters if present (because they clog the extension)
-        image = (
-            image['src'].replace('/_next/image/?url=', '')
-            .split('&', 1)[0]
-        )
-    elif image:
-        image = image['src']
-    else:
-        image = ''
-    # Decode URL-encoded image path (if any)
-    image = unquote(image)
-
+    ld = json_ld_article(soup)
     return {
         'id': uuid.uuid4().hex,
-        'title': h1.get_text(strip=True),
-        'description': description,
-        'date': date_link.get_text(strip=True),
-        'tags': json.dumps([link.get_text(strip=True) for link in links]),
-        'reading_time': reading_time,
-        'image': image,
-        'related_links': json.dumps(kwargs.get('related_links', [])),
-        'canonical_url': kwargs.get('canonical_url', ''),
+        'title': ld.get('headline') or meta_content(soup, 'og:title'),
+        'description': ld.get('description') or meta_content(soup, 'og:description'),
+        'date': format_date(ld.get('datePublished') or meta_content(soup, 'article:published_time')),
+        'tags': json.dumps(article_tags(ld.get('keywords', ''))),
+        'reading_time': format_reading_time(ld.get('timeRequired', '')),
+        'image': first_image(ld, soup),
+        'related_links': json.dumps(related_links),
+        'canonical_url': canonical_url,
     }
 
 
@@ -200,77 +198,60 @@ def make_token_chunks(
     return chunks
 
 
-def article_content(
-        soup: bs4.PageElement | bs4.Tag | bs4.NavigableString
-) -> tuple[list[str], list[str]]:
+def strip_widgets(body: bs4.Tag) -> None:
+    for widget in body.select('iframe, #elevenlabs-audionative-widget, div[data-playerurl]'):
+        widget.decompose()
+
+
+def drop_trailing_promos(body: bs4.Tag) -> None:
+    # Data Points posts put community promos after the first <hr>
+    divider = body.find('hr', recursive=False)
+    if divider is None:
+        return
+    for block in [divider, *divider.find_next_siblings()]:
+        block.decompose()
+
+
+def article_content(body: bs4.Tag) -> tuple[list[str], list[str]]:
     """
-    Extract text excerpts and related links from the article soup.
-    This function extracts text from the article content, as well as outbound links.
-    :param soup: BeautifulSoup object containing the article HTML.
+    Extract text excerpts (one per top-level block) and outbound links from the article body.
+
     :return: A tuple containing a list of text excerpts and a list of related links.
     """
+    strip_widgets(body)
+    drop_trailing_promos(body)
+    related_links = [a['href'] for a in body.find_all('a', href=True)]
+    blocks = (block.get_text(strip=True, separator=' ') for block in body.find_all(recursive=False))
+    return [text for text in blocks if text], related_links
 
-    # Clean ads and elevenlabs transcripts
-    for iframe in soup.find_all('iframe'):
-        iframe.decompose()
 
-    elevenlabs_transcript = soup.find('div', attrs={'data-playerurl': True})
-    if elevenlabs_transcript:
-        elevenlabs_transcript.decompose()
-
-    # Get related links
-    related_links = list(map(
-        lambda x: x['href'],
-        # Filter out empty links and those without href attributes
-        filter(lambda x: x and x.has_attr('href'), soup.find_all('a'))
-    ))
-
-    text_excerpts = list(
-        # Filter out empty strings (they shouldn't be pipelined into the database)
-        filter(
-            lambda x: x,
-            # Extract text from the soup and keep its structure
-            map(lambda x: x.get_text(strip=True, separator=' '), soup.children)
-        )
-    )
-
-    return text_excerpts, related_links
+def fetch_soup(url: str) -> BeautifulSoup:
+    response = requests.get(url, headers=HEADERS)
+    response.raise_for_status()
+    return BeautifulSoup(response.text, 'html.parser')
 
 
 def scrape_article(url: str) -> tuple[dict, list[dict], dict]:
     """
     Scrape an article from the given URL and extract its metadata, content, and image.
 
-    :param url: URL of the article to scrape.
     :return: A tuple containing:
         a dictionary with article metadata;
         a list of dictionaries representing text chunks with their metadata;
-        a dictionary with image data (id and URL).;
+        a dictionary with image data (id and URL).
     """
+    soup = fetch_soup(url)
+    body = soup.select_one('article div.prose')
+    if body is None:
+        raise ValueError(f'No article body found at {url}')
 
-    response = requests.get(url, headers=HEADERS)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, 'html.parser').find('article')
-
-    header = soup.find('header')
-    content = soup.find('div', class_=re.compile(r'^post_postContent'))
-
-    excerpts, related_links = article_content(content)
-    meta = article_meta(
-        header,
-        related_links=related_links,
-        canonical_url=url,
-    )
-
+    excerpts, related_links = article_content(body)
+    meta = article_meta(soup, canonical_url=url, related_links=related_links)
     image = {
-        # Image is one-to-one with article (in future may be with chunks too)
-        'id': meta["id"],
+        'id': meta['id'],
         'url': meta.pop('image'),
-        'meta': {
-            'article_id': meta["id"],  # for quick search by where clause
-        }
+        'meta': {'article_id': meta['id']},
     }
-
     return meta, make_token_chunks(meta, excerpts), image
 
 
