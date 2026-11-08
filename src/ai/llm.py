@@ -28,17 +28,23 @@ PROVIDERS: dict[str, LLMConfig] = {
 DEFAULT_PROVIDER = "ollama"
 
 
-def config_from_env() -> LLMConfig:
+def env_provider() -> str:
+    return os.getenv("LLM_PROVIDER", DEFAULT_PROVIDER)
+
+
+def config_from_env(provider: str | None = None) -> LLMConfig:
     """
-    Resolve the LLM config from `LLM_PROVIDER` (a key of `PROVIDERS`, default "ollama"),
-    with `LLM_BASE_URL`, `LLM_API_KEY` and `LLM_MODEL` overriding the preset.
+    Resolve the LLM config for `provider` (a key of `PROVIDERS`, default `LLM_PROVIDER` or "ollama").
+    For the provider selected by `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY` and `LLM_MODEL` override the preset.
     Local providers ignore the key, but the OpenAI SDK requires a non-empty one.
     """
-    preset = PROVIDERS[os.getenv("LLM_PROVIDER", DEFAULT_PROVIDER)]
+    provider = provider or env_provider()
+    preset = PROVIDERS[provider]
+    overrides = os.environ if provider == env_provider() else {}
     return LLMConfig(
-        base_url=os.getenv("LLM_BASE_URL", preset.base_url),
-        api_key=os.getenv("LLM_API_KEY") or preset.api_key or os.getenv("OPENAI_API_KEY", ""),
-        model=os.getenv("LLM_MODEL", preset.model),
+        base_url=overrides.get("LLM_BASE_URL", preset.base_url),
+        api_key=overrides.get("LLM_API_KEY") or preset.api_key or os.getenv("OPENAI_API_KEY", ""),
+        model=overrides.get("LLM_MODEL", preset.model),
         extra_body=preset.extra_body,
     )
 

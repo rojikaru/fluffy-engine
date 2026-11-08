@@ -3,7 +3,7 @@ import types
 
 import streamlit as st
 
-from src.ai.llm import OpenAIClient
+from src.ai.llm import LLMConfig, OpenAIClient, PROVIDERS, config_from_env, env_provider
 from src.ai.rag import rag_call
 from src.db import get_collection
 
@@ -21,11 +21,44 @@ def init_session_state():
     if 'articles' not in st.session_state:
         st.session_state['articles'] = get_collection('articles')
 
-    if 'llm' not in st.session_state:
-        st.session_state['llm'] = OpenAIClient()
-
     if 'chat_history' not in st.session_state:
         st.session_state['chat_history'] = []
+
+
+PROVIDER_LABELS = {"ollama": "Ollama", "docker": "Docker Model Runner", "openai": "OpenAI"}
+
+
+def sidebar_llm_config() -> LLMConfig:
+    providers = list(PROVIDERS)
+    with st.sidebar:
+        st.header("Model")
+        provider = st.selectbox(
+            "Provider",
+            providers,
+            index=providers.index(env_provider()),
+            format_func=lambda name: PROVIDER_LABELS.get(name, name),
+        )
+        defaults = config_from_env(provider)
+        # Keys are per provider, so switching providers restores that provider's defaults
+        base_url = st.text_input("Base URL", value=defaults.base_url or "", key=f"base_url_{provider}",
+                                 help="Leave empty for the provider's official endpoint.")
+        model = st.text_input("Model", value=defaults.model, key=f"model_{provider}")
+        api_key = st.text_input("API key", type="password", key=f"api_key_{provider}",
+                                help="Leave empty to use the key from `.env`.")
+
+    return LLMConfig(
+        base_url=base_url or None,
+        api_key=api_key or defaults.api_key,
+        model=model or defaults.model,
+        extra_body=defaults.extra_body,
+    )
+
+
+def get_llm(config: LLMConfig) -> OpenAIClient:
+    llm = st.session_state.get('llm')
+    if llm is None or llm.config != config:
+        llm = st.session_state['llm'] = OpenAIClient(config)
+    return llm
 
 
 def display_history():
@@ -109,6 +142,11 @@ def display_chat(
 
 def main():
     st.title("Fluffy Engine - RAG Helper")
+    config = sidebar_llm_config()
+    if not config.api_key:
+        st.info("Enter an API key in the sidebar to use this provider.")
+        st.stop()
+    llm = get_llm(config)
 
     with st.spinner("Loading Fluffy's database..."):
         init_session_state()
@@ -163,7 +201,7 @@ def main():
                 # Call the RAG function (may take time)
                 response = rag_call(
                     question=query,
-                    llm=st.session_state['llm'],
+                    llm=llm,
                     stream=True,
                 )
 
