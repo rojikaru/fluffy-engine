@@ -62,27 +62,56 @@ def is_ragable(
     return resp.label == "RAGABLE"
 
 
+def relevant_excerpts(collection, question: str, threshold: float, n_results: int = 10) -> list[tuple[str, dict]]:
+    """
+    Return (text, metadata) of chunks within `threshold`, most relevant first.
+    Distances are squared L2 over unit vectors: d = 2 - 2 * cosine similarity.
+    """
+    result = collection.query(
+        query_texts=[question],
+        n_results=n_results,
+        include=["documents", "metadatas", "distances"],
+    )
+    hits = zip(result['documents'][0], result['metadatas'][0], result['distances'][0])
+    return [(text, meta) for text, meta, distance in hits if distance <= threshold]
+
+
+def source_articles(collection, excerpts: list[tuple[str, dict]]) -> dict[str, dict]:
+    """Metadata of the articles the excerpts come from, keyed by id, in relevance order."""
+    ids = list(dict.fromkeys(meta['article_id'] for _, meta in excerpts))
+    found = collection.get(ids=ids, include=["metadatas"])
+    by_id = dict(zip(found['ids'], found['metadatas']))
+    return {article_id: by_id[article_id] for article_id in ids if article_id in by_id}
+
+
+def format_context(excerpts: list[tuple[str, dict]], articles: dict[str, dict]) -> str:
+    def block(text: str, meta: dict) -> str:
+        article = articles.get(meta['article_id'], {})
+        heading = f"[{article.get('title', 'Untitled')}, {article.get('date', 'n.d.')}]"
+        subtitle = f"{meta['subtitle']}: " if meta.get('subtitle') else ""
+        return f"{heading}\n{subtitle}{text}"
+
+    return "\n\n".join(block(text, meta) for text, meta in excerpts)
+
+
 def _internal_llm_call(
         llm: LLMClient,
         system_prompt: str,
         question: str,
-        articles: list[str] | None = None,
+        context: str | None = None,
         stream: bool = True,
         **model_kwargs: Any,
 ) -> ChatResult | Generator:
-    # Internal function to perform a call to the LLM with context from articles.
-
-    # Prepare the messages for the LLM
-    messages = [{"role": "system", "content": system_prompt}]
-    if articles:
-        for article in articles:
-            messages.append({"role": "system", "content": article})
-    messages.append({"role": "user", "content": question})
-
+    # One system message: some chat templates (e.g. Qwen) reject a system message that isn't first
+    if context:
+        system_prompt = f"{system_prompt}\n\nContext:\n\n{context}"
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": question},
+    ]
     if stream:
         return llm.stream(messages, **model_kwargs)
-    else:
-        return llm.chat(messages, **model_kwargs)
+    return llm.chat(messages, **model_kwargs)
 
 
 def rag_call(
@@ -117,41 +146,12 @@ def rag_call(
     articles_collection = get_collection("articles")
     images_collection = get_collection("images")
 
-    # Query the texts collection for relevant excerpts
-    context_query = texts_collection.query(
-        query_texts=[question],
-        n_results=10,
-    )
-    # Metadatas are sliced by relevance to queries, we had one - we take one
-    excerpts_metas = context_query['metadatas'][0]
-    distances = context_query['distances'][0]
+    excerpts = relevant_excerpts(texts_collection, question, rag_threshold)
+    if not excerpts:
+        response_stream = _internal_llm_call(llm, system_prompt, question, stream=stream, **model_kwargs)
+        return RagResponseSchema(response=response_stream, rag_used=False)
 
-    # Cosine similarity threshold to determine if the question is relevant to text
-    ragable = distances and distances[0] <= rag_threshold
-    if not ragable:
-        # just call the LLM without any articles
-        response_stream = _internal_llm_call(
-            llm,
-            system_prompt,
-            question,
-            articles=None,
-            stream=stream,
-            **model_kwargs
-        )
-        return RagResponseSchema(
-            response=response_stream,
-            rag_used=False,
-            articles=None,
-            images=None
-        )
-
-    # Query articles that contain the found excerpts
-    orig_articles_ids = list(set(map(lambda res: res['article_id'], excerpts_metas)))
-    articles_query = articles_collection.get(
-        ids=orig_articles_ids,
-        include=["metadatas", "documents", "embeddings"],
-    )
-    articles_titles, articles_meta = articles_query['documents'], articles_query['metadatas']
+    articles = source_articles(articles_collection, excerpts)
 
     # Query related images from the articles
     images = query_images_by_text(images_collection, question)
@@ -160,24 +160,17 @@ def rag_call(
                     for i, meta in enumerate(images_metas)
                     if images_dists[i] <= image_threshold]
 
-    for i, title in enumerate(articles_titles):
-        # Convert to dict to ensure mutability
-        d = dict(articles_meta[i])
-        d['title'] = title or 'Reference'
-        articles_meta[i] = d
-
-    # call out to the provided LLM client with the articles as context
     response_stream = _internal_llm_call(
         llm,
         system_prompt,
         question,
-        articles=articles_titles,
+        context=format_context(excerpts, articles),
         stream=stream,
         **model_kwargs
     )
     return RagResponseSchema(
         response=response_stream,
         rag_used=True,
-        articles=articles_meta,
+        articles=list(articles.values()),
         images=[meta['url'] for meta in images_metas]
     )
