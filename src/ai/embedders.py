@@ -1,4 +1,6 @@
 import os
+from functools import cache
+from typing import Literal
 
 import numpy as np
 import torch
@@ -8,16 +10,16 @@ from chromadb.utils.embedding_functions import OpenCLIPEmbeddingFunction
 
 DEVICE = os.getenv('TORCH_DEVICE') or ('cuda' if torch.cuda.is_available() else 'cpu')
 
+TEXT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
-def embedding_factory(
-        embedding_function: str | None = None
-) -> EmbeddingFunction[Embeddable]:
-    """
-    Factory function to create an embedding function based on the provided name.
-    :param embedding_function: Name of the embedding function to create.
-    :return: An instance of the specified embedding function.
-    """
+EmbedderName = Literal["noop", "openai", "huggingface", "openclip"]
 
+
+@cache
+def embedding_factory(embedding_function: EmbedderName = "openclip") -> EmbeddingFunction[Embeddable]:
+    """
+    Return the shared embedding function with the given name; each model is loaded once per process.
+    """
     match embedding_function:
         case "noop":
             return NoOpEmbeddingFunction()
@@ -25,8 +27,9 @@ def embedding_factory(
             return OpenAIEmbeddingFunction()
         case "huggingface":
             return HuggingFaceEmbeddingFunction()
-        case _:  # Default to OpenCLIPEmbeddingFunction
+        case "openclip":
             return OpenCLIPEmbeddingFunction(device=DEVICE)
+    raise ValueError(f"Unknown embedding function: {embedding_function!r}")
 
 
 class NoOpEmbeddingFunction(EmbeddingFunction[Embeddable]):
@@ -77,13 +80,14 @@ class HuggingFaceEmbeddingFunction(EmbeddingFunction[Embeddable]):
     A wrapper for Hugging Face's Sentence Transformers.
     This class uses the Sentence Transformers library to generate embeddings for a list of texts.
     Usage:
-        embedding_function = HuggingFaceEmbeddingFunction(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        embedding_function = HuggingFaceEmbeddingFunction(model_name="BAAI/bge-small-en-v1.5")
         embeddings = embedding_function(["text1", "text2"])
     """
 
-    def __init__(self, model_name="sentence-transformers/all-MiniLM-L6-v2"):
+    def __init__(self, model_name=TEXT_EMBEDDING_MODEL):
         from sentence_transformers import SentenceTransformer
-        self.model = SentenceTransformer(model_name)
+        self.model = SentenceTransformer(model_name, device=DEVICE)
 
     def __call__(self, texts: list[str]) -> Embeddings:
-        return self.model.encode(texts, show_progress_bar=False).tolist()
+        # Unit vectors keep Chroma's squared L2 distance equal to 2 - 2 * cosine similarity
+        return self.model.encode(texts, normalize_embeddings=True, show_progress_bar=False).tolist()

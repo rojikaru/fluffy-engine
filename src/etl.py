@@ -14,7 +14,6 @@ from bs4 import BeautifulSoup
 from chromadb.utils.data_loaders import ImageLoader
 from tqdm import tqdm
 
-from src.ai.embedders import embedding_factory
 from src.ai.tokenizers import tokenizer_factory
 from src.db import get_collection
 
@@ -120,81 +119,72 @@ def article_meta(soup: BeautifulSoup, canonical_url: str, related_links: list[st
     }
 
 
+SENTENCE_END = re.compile(r'(?<=[.!?])\s+')
+
+
+def split_to_fit(text: str, count_tokens, max_tokens: int) -> list[str]:
+    """Split text longer than `max_tokens` at sentence boundaries."""
+    if count_tokens(text) <= max_tokens:
+        return [text]
+    return [' '.join(group) for group in pack(SENTENCE_END.split(text), count_tokens, max_tokens)]
+
+
+def pack(pieces: list[str], count_tokens, max_tokens: int) -> list[list[str]]:
+    """Greedily group consecutive pieces so each group stays within `max_tokens`."""
+    groups, current, current_tokens = [], [], 0
+    for piece in pieces:
+        tokens = count_tokens(piece)
+        if current and current_tokens + tokens > max_tokens:
+            groups.append(current)
+            current, current_tokens = [], 0
+        current.append(piece)
+        current_tokens += tokens
+    return groups + [current] if current else groups
+
+
+def split_subtitle(text: str) -> tuple[str, str]:
+    """Split a leading short "Subtitle: content" (e.g. "What's new: ...")."""
+    head, sep, rest = text.partition(': ')
+    return (head, rest) if sep and len(head.split()) < 20 else ('', text)
+
+
 def make_token_chunks(
         meta: dict,
         excerpts: list[str],
-        max_tokens: int = 512,
-        tokenizer_provider: str = "openai",
+        max_tokens: int = 510,
+        tokenizer_provider: str = "huggingface",
 ) -> list[dict]:
     """
     Split the article content into token-limited chunks.
 
     :param meta: Metadata dict containing at least 'id' and 'date'.
     :param excerpts: List of text excerpts from the article.
-    :param max_tokens: Maximum number of tokens per chunk.
+    :param max_tokens: Maximum tokens per chunk, counted with the text embedder's tokenizer:
+        its window is 512 including 2 special tokens, and longer input is silently truncated.
     :param tokenizer_provider: Which tokenizer to use (e.g. "openai", "huggingface").
     :return: List of dicts, each containing 'id', 'content', and 'meta' with subtitle, article_id, date, chunk_idx, total_chunks.
     """
+    count_tokens = tokenizer_factory(tokenizer_provider).count_tokens
+    pieces = [piece
+              for excerpt in excerpts if not is_boilerplate(excerpt)
+              for piece in split_to_fit(excerpt, count_tokens, max_tokens)]
+    groups = pack(pieces, count_tokens, max_tokens)
 
-    tokenizer = tokenizer_factory(tokenizer_provider)
-
-    chunks = []
-    current_chunk = []
-    current_tokens = 0
     article_id = meta.get("id", "")
-
-    def flush_chunk():
-        nonlocal current_chunk, current_tokens
-        if not current_chunk:
-            return
-
-        full_text = " ".join(current_chunk).strip()
-        parts = full_text.split(": ", 1)
-
-        # Split off a leading "subtitle: content" if present
-        if len(parts) == 2 and len(parts[0].split()) < 20:
-            subtitle, content = parts
-        else:
-            subtitle, content = "", full_text
-
+    chunks = []
+    for idx, group in enumerate(groups):
+        subtitle, content = split_subtitle(' '.join(group).strip())
         chunks.append({
-            "id": f"{article_id}-{len(chunks)}",
+            "id": f"{article_id}-{idx}",
             "content": content.strip(),
             "meta": {
                 "article_id": article_id,
                 "date": meta.get("date", ""),
                 "subtitle": subtitle,
-            }
+                "chunk_idx": idx,
+                "total_chunks": len(groups),
+            },
         })
-        # reset for next chunk
-        current_chunk = []
-        current_tokens = 0
-
-    for excerpt in excerpts:
-        if is_boilerplate(excerpt):
-            continue
-
-        # how many tokens this excerpt uses
-        excerpt_tokens = tokenizer.count_tokens(excerpt)
-
-        # keep size strictly within the limit
-        next_iter_tokens = current_tokens + excerpt_tokens
-        if next_iter_tokens > max_tokens:
-            flush_chunk()
-
-        # add excerpt to the (new) current chunk
-        current_chunk.append(excerpt)
-        current_tokens += excerpt_tokens
-
-    # Flush any remaining text
-    flush_chunk()
-
-    # Annotate for better querying and debugging
-    total = len(chunks)
-    for idx, chunk in enumerate(chunks):
-        chunk["meta"]["chunk_idx"] = idx
-        chunk["meta"]["total_chunks"] = total
-
     return chunks
 
 
@@ -314,18 +304,12 @@ def run_pipeline():
     :return: None
     """
 
-    texts = get_collection(
-        "texts",
-        embedding_function=embedding_factory('hf'),
-    )
+    texts = get_collection("texts")
     images = get_collection(
         "images",
         data_loader=ImageLoader(),
     )
-    articles = get_collection(
-        "articles",
-        embedding_function=embedding_factory('noop'),
-    )
+    articles = get_collection("articles")
 
     def process_article(url: str) -> None:
         """

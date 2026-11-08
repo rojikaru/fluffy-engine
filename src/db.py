@@ -16,7 +16,7 @@ from chromadb import EmbeddingFunction
 import torch
 from transformers import CLIPProcessor, CLIPModel
 
-from src.ai.embedders import DEVICE, embedding_factory
+from src.ai.embedders import DEVICE, EmbedderName, embedding_factory
 
 dotenv.load_dotenv()
 
@@ -41,6 +41,14 @@ def _embed_texts(texts: list[str]) -> np.ndarray:
     return feats.cpu().numpy()
 
 
+COLLECTION_EMBEDDINGS: dict[str, EmbedderName] = {
+    "texts": "huggingface",
+    "articles": "noop",
+    "images": "openclip",
+}
+
+
+@cache
 def db_client_factory() -> chromadb.Client:
     """
     Create a ChromaDB client with the default settings.
@@ -67,13 +75,13 @@ def db_client_factory() -> chromadb.Client:
 
 def get_collection(collection_name: str, **kwargs: any) -> chromadb.Collection:
     """
-    Get or create a ChromaDB collection, wiring up your standard embedding function.
+    Get or create a ChromaDB collection with its embedding function from `COLLECTION_EMBEDDINGS`.
     """
 
-    client = kwargs.get("client", db_client_factory())
+    client = kwargs.get("client") or db_client_factory()
     data_loader = kwargs.get("data_loader", None)
 
-    ef = kwargs.get("embedding_function", embedding_factory())
+    ef = kwargs.get("embedding_function") or embedding_factory(COLLECTION_EMBEDDINGS.get(collection_name, "openclip"))
     if not isinstance(ef, EmbeddingFunction):
         raise TypeError("`embedding_function` must be a chromadb.EmbeddingFunction")
 

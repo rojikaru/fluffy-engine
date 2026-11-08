@@ -1,6 +1,10 @@
+from functools import cache
 from typing import Protocol
+
 import tiktoken
 from transformers import AutoTokenizer
+
+from src.ai.embedders import TEXT_EMBEDDING_MODEL
 
 
 class Tokenizer(Protocol):
@@ -21,6 +25,7 @@ class Tokenizer(Protocol):
     def truncate(self, text: str, max_tokens: int) -> str: ...
 
 
+@cache
 def tokenizer_factory(provider: str) -> Tokenizer:
     """
     Factory function to create a tokenizer based on the specified provider.
@@ -32,7 +37,7 @@ def tokenizer_factory(provider: str) -> Tokenizer:
         case "openai":
             return OpenAITokenizer("text-embedding-3-small")
         case "huggingface":
-            return HuggingFaceTokenizer("sentence-transformers/all-MiniLM-L6-v2")
+            return HuggingFaceTokenizer(TEXT_EMBEDDING_MODEL)
         case _:
             raise ValueError(f"Unknown tokenizer provider: {provider}")
 
@@ -53,7 +58,7 @@ class OpenAITokenizer:
 
 
 class HuggingFaceTokenizer:
-    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str = TEXT_EMBEDDING_MODEL):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     def count_tokens(self, text: str) -> int:
