@@ -22,6 +22,7 @@ class RagResponseSchema(BaseModel):
 # It is a prototype that filters out junk,
 # like "What is the weather today?" or "How to cook pasta?",
 # but it is too strict for now.
+# TODO: make it more flexible and allow more questions.
 def is_ragable(
         question: str,
         llm: LLMClient,
@@ -139,7 +140,10 @@ def _internal_llm_call(
 ) -> ChatResult | Generator:
     # One system message: some chat templates (e.g. Qwen) reject a system message that isn't first
     if context:
-        system_prompt = f"{system_prompt}\n\nContext:\n\n{context}"
+        system_prompt = (
+            f"{system_prompt}\n\n"
+            f"Answer using the following excerpts from the AI magazine ‘The Batch’:\n\n{context}"
+        )
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": question},
@@ -153,11 +157,11 @@ def rag_call(
         question: str,
         llm: LLMClient,
         system_prompt: str = (
-                "You are an expert assistant. "
-                "Use the following context from AI Magazine ‘The Batch’ to answer the question. "
+                "You are an expert assistant on AI news. "
         ),
         stream: bool = True,
         rag_threshold: float = 0.75,
+        rag_margin: float = 0.25,
         **model_kwargs: Any,
 ) -> RagResponseSchema:
     """
@@ -180,7 +184,7 @@ def rag_call(
     articles_collection = get_collection("articles")
     images_collection = get_collection("images")
 
-    excerpts = relevant_excerpts(texts_collection, question, rag_threshold)
+    excerpts = relevant_excerpts(texts_collection, question, rag_threshold, rag_margin)
     if not excerpts:
         response_stream = _internal_llm_call(llm, system_prompt, question, stream=stream, **model_kwargs)
         return RagResponseSchema(response=response_stream, rag_used=False)

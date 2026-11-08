@@ -281,7 +281,7 @@ def get_articles_links(limit: int | None = None) -> list[str]:
     return links[:limit]
 
 
-def image_url_to_pil(image_url: str, max_size: int or None = 512) -> Image.Image:
+def image_url_to_pil(image_url: str, max_size: int | None = 512) -> Image.Image:
     """
     Convert an image URL to a PIL image in bytes format.
 
