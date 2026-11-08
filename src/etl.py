@@ -1,9 +1,9 @@
 import json
-import os
 import re
 import time
 import uuid
 from io import BytesIO
+from pathlib import Path
 from urllib.parse import unquote
 import dotenv
 import numpy as np
@@ -30,6 +30,18 @@ BOILERPLATE_PATTERNS = [
     r'Privacy Policy',
 ]
 boiler_regex = [re.compile(pat, re.IGNORECASE) for pat in BOILERPLATE_PATTERNS]
+
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+}
+
+SITEMAP_URL = 'https://www.deeplearning.ai/sitemap.xml'
+BATCH_PREFIX = 'https://www.deeplearning.ai/the-batch/'
+# Listing pages, not articles: tag pages, newsletter issues, Andrew's letters
+LISTING_PAGE = re.compile(r'/the-batch/(tag|issue-\d+|letters?)(/|$)')
+LINKS_CACHE = Path('articles_links.txt')
 
 
 def is_boilerplate(excerpt: str) -> bool:
@@ -236,11 +248,7 @@ def scrape_article(url: str) -> tuple[dict, list[dict], dict]:
         a dictionary with image data (id and URL).;
     """
 
-    response = requests.get(url, headers={
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-    })
+    response = requests.get(url, headers=HEADERS)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, 'html.parser').find('article')
 
@@ -266,67 +274,40 @@ def scrape_article(url: str) -> tuple[dict, list[dict], dict]:
     return meta, make_token_chunks(meta, excerpts), image
 
 
-def get_articles_links(api_limit: int = 100) -> list[str]:
-    """
-    Fetch links to articles from The Batch API and save them to a file.
+def fetch_sitemap_links(url: str = SITEMAP_URL) -> list[str]:
+    response = requests.get(url, headers=HEADERS)
+    response.raise_for_status()
+    return re.findall(r'<loc>\s*([^<\s]+)\s*</loc>', response.text)
 
-    :param api_limit: Maximum number of articles to fetch per API call.
-    :return: List of article links.
-    """
 
-    articles_file = 'articles_links.txt'
-    junk_tags = ['letters', 'the-batch', 'hash-developer']
-    # Base URL for The Batch
-    base_url = 'https://www.deeplearning.ai/the-batch'
-    # TODO: Consider switch to sitemap.xml parsing
-    api_base_url = '{base}/?key={key}&limit={limit}&include={include}'.format(
-        base='https://dl-staging-website.ghost.io/ghost/api/content/posts',
-        key=os.getenv('THE_BATCH_API_KEY'),
-        limit=api_limit,
-        include='tags'  # authors,published
+def is_article_link(link: str) -> bool:
+    return (
+        link.startswith(BATCH_PREFIX)
+        and link != BATCH_PREFIX
+        and not LISTING_PAGE.search(link)
     )
 
-    articles = set()
 
-    # Try to read existing links from the file
-    try:
-        with open(articles_file, 'r') as f:
-            return f.read().splitlines()
-    except FileNotFoundError:
-        print(f"File '{articles_file}' not found. Starting fresh.")
+def collect_article_links() -> list[str]:
+    links = {link.rstrip('/') + '/' for link in fetch_sitemap_links()}
+    return sorted(filter(is_article_link, links))
 
-    pagination = {
-        'next': '1',
-    }
-    print('Page size: {}'.format(api_limit))
 
-    progress_bar = tqdm()
-    while pagination['next'] is not None:
-        response = requests.get(api_base_url + f'&page={pagination["next"]}')
-        response.raise_for_status()
-        response = response.json()
-        posts, pagination = response['posts'], response['meta']['pagination']
+def get_articles_links(limit: int | None = None) -> list[str]:
+    """
+    Collect The Batch article links from the public sitemap, cached in `articles_links.txt`.
 
-        # Extract links from posts
-        for post in posts:
-            # Skip posts with a 'letters' or 'the-batch' tag
-            if any(tag['slug'] in junk_tags for tag in post['tags']):
-                continue
+    The Ghost Content API used previously now answers 402 "Site unavailable".
 
-            if post['slug']:
-                link = f"{base_url}/{post['slug']}"
-                articles.add(link)
-
-        # Show progress bar
-        progress_bar.total = pagination['pages']
-        progress_bar.update()
-
-    # Save the links to a file
-    with open(articles_file, 'w') as f:
-        for link in articles:
-            f.write(f"{link}\n")
-
-    return list(articles)
+    :param limit: Optional cap on the number of links (handy for quick test runs).
+    :return: List of article links.
+    """
+    if LINKS_CACHE.exists():
+        links = LINKS_CACHE.read_text().splitlines()
+    else:
+        links = collect_article_links()
+        LINKS_CACHE.write_text(''.join(f'{link}\n' for link in links))
+    return links[:limit]
 
 
 def image_url_to_pil(image_url: str, max_size: int or None = 512) -> Image.Image:
