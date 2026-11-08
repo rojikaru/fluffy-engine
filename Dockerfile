@@ -1,36 +1,36 @@
+# syntax=docker/dockerfile:1
 FROM python:3.13-slim AS builder
 
-# install build tools & libraries needed to compile any C-extensions
-RUN apt update && \
-    apt install -y --no-install-recommends \
-      build-essential \
-      git \
-      libssl-dev \
-      libffi-dev \
-      curl \
-    && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:0.13.7 /uv /bin/uv
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never
 
 WORKDIR /app
 
-# copy only your lock file (or requirements.txt)
-COPY requirements.txt .
-
-# install *all* dependencies here
-RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-default-groups --group cpu
 
 
 FROM python:3.13-slim AS runtime
 
+RUN useradd --create-home --uid 1000 user
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    HOME=/home/user
+
 WORKDIR /app
 
-# Copy only the installed packages from builder
-COPY --from=builder /usr/local/lib/python3.13/site-packages \
-                  /usr/local/lib/python3.13/site-packages
+COPY --from=builder --chown=user /app/.venv /app/.venv
+COPY --chown=user src/ src/
 
-# Copy your app code
-COPY . .
+USER user
 
-# Expose and run
 EXPOSE 8501
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# `python -m` puts /app on sys.path so the `src.*` imports resolve.
+CMD ["python", "-m", "streamlit", "run", "src/app.py", \
+     "--server.port=8501", "--server.address=0.0.0.0"]

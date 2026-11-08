@@ -8,39 +8,51 @@ authors = [
 ]
 requires-python = ">=3.13,<3.14"
 dependencies = [
-    # app
     "streamlit>=1.67",
     "python-dotenv>=1.1",
     "pydantic>=2.11",
-    # LLM
     "openai>=3.46",
     "tiktoken>=0.9",
-    # vector store
     "chromadb>=1.5",
     "pysqlite3-binary>=0.5.4",
-    # ML / embeddings
-    "torch>=2.15",
-    "torchvision>=0.29",
     "transformers>=5.22",
     "sentence-transformers>=6.2",
     "open-clip-torch>=4.2",
     "numpy>=2.3",
     "pillow>=11.2",
-    # scraping / ETL
     "requests>=2.32",
     "beautifulsoup4>=4.13",
     "tqdm>=4.67",
 ]
 
+[dependency-groups]
+# PyTorch build. `cu134` is installed by default (local GPU);
+# the Docker image uses `--no-default-groups --group cpu`.
+cu134 = ["torch>=2.15", "torchvision>=0.29"]
+cpu = ["torch>=2.15", "torchvision>=0.29"]
+
 [tool.uv]
 # Not an installable package: modules are imported as `src.*` from the repo root.
 package = false
+default-groups = ["cu134"]
+conflicts = [[{ group = "cu134" }, { group = "cpu" }]]
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu134" }
-torchvision = { index = "pytorch-cu134" }
+torch = [
+    { index = "pytorch-cu134", group = "cu134" },
+    { index = "pytorch-cpu", group = "cpu" },
+]
+torchvision = [
+    { index = "pytorch-cu134", group = "cu134" },
+    { index = "pytorch-cpu", group = "cpu" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu134"
 url = "https://download.pytorch.org/whl/cu134"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
 explicit = true
