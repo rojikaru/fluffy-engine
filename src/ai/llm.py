@@ -10,6 +10,40 @@ from pydantic import BaseModel
 dotenv.load_dotenv()
 
 
+@dataclass(frozen=True)
+class LLMConfig:
+    base_url: str | None
+    api_key: str
+    model: str
+    # Provider-specific request fields, e.g. switching off thinking for local Qwen
+    extra_body: dict[str, Any] = field(default_factory=dict)
+
+
+NO_THINKING = {"chat_template_kwargs": {"enable_thinking": False}}
+
+PROVIDERS: dict[str, LLMConfig] = {
+    "ollama": LLMConfig("http://localhost:11434/v1", "ollama", "qwen3.5:9b"),
+    "docker": LLMConfig("http://localhost:12434/engines/llama.cpp/v1", "docker", "ai/qwen3.5:9b", NO_THINKING),
+    "openai": LLMConfig(None, "", "gpt-5.6-terra"),
+}
+DEFAULT_PROVIDER = "ollama"
+
+
+def config_from_env() -> LLMConfig:
+    """
+    Resolve the LLM config from `LLM_PROVIDER` (a key of `PROVIDERS`, default "ollama"),
+    with `LLM_BASE_URL`, `LLM_API_KEY` and `LLM_MODEL` overriding the preset.
+    Local providers ignore the key, but the OpenAI SDK requires a non-empty one.
+    """
+    preset = PROVIDERS[os.getenv("LLM_PROVIDER", DEFAULT_PROVIDER)]
+    return LLMConfig(
+        base_url=os.getenv("LLM_BASE_URL", preset.base_url),
+        api_key=os.getenv("LLM_API_KEY") or preset.api_key or os.getenv("OPENAI_API_KEY", ""),
+        model=os.getenv("LLM_MODEL", preset.model),
+        extra_body=preset.extra_body,
+    )
+
+
 @dataclass
 class ChatResult:
     id: str
@@ -73,15 +107,13 @@ class LLMClient(Protocol):
 
 class OpenAIClient:
     """
-    A client for OpenAI's chat-based LLMs.
+    A client for any OpenAI-compatible Chat Completions API: OpenAI, Ollama, Docker Model Runner.
     """
 
-    def __init__(self, **client_kwargs):
-        # Give room for custom one-off key passing
-        openai.api_key = client_kwargs.pop("api_key", os.getenv("OPENAI_API_KEY"))
-
-        self.model = client_kwargs.pop("model", "gpt-4o")
-        self.client = openai.OpenAI()
+    def __init__(self, config: LLMConfig | None = None):
+        self.config = config or config_from_env()
+        self.model = self.config.model
+        self.client = openai.OpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
     def chat(
             self,
